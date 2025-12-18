@@ -1,0 +1,5 @@
+{
+  "name": "Campaign Video Optimizer Pro",
+  "description": "A professional-grade batch video compressor and thumbnail generator optimized for smartphone campaigns. It features strict file size management (1MB target), dynamic bitrate calculation, and smart thumbnail extraction to avoid black frames.",
+  "requestFramePermissions": []
+}
