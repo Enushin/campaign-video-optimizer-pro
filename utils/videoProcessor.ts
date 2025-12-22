@@ -5,6 +5,7 @@ import { getOptimalThumbnailTimestamps } from "./frameAnalyzer";
 
 let ffmpeg: FFmpeg | null = null;
 let isProcessing = false;
+let processedCount = 0; // 処理カウンター（メモリクリア判定用）
 
 // 処理タイムアウト（秒）- 動画の長さに応じて動的に計算
 const BASE_TIMEOUT_SECONDS = 60;
@@ -62,6 +63,33 @@ export async function loadFFmpeg() {
   }
 
   return ffmpeg;
+}
+
+/**
+ * FFmpegインスタンスをリセット（メモリクリア）
+ */
+export async function resetFFmpeg(): Promise<void> {
+  if (ffmpeg) {
+    try {
+      ffmpeg.terminate();
+    } catch (e) {
+      console.warn("FFmpeg terminate failed:", e);
+    }
+    ffmpeg = null;
+  }
+  processedCount = 0;
+  // 少し待ってからGCを促す
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  // 再初期化
+  await loadFFmpeg();
+  console.log("FFmpeg instance reset for memory cleanup");
+}
+
+/**
+ * 処理カウントを取得
+ */
+export function getProcessedCount(): number {
+  return processedCount;
 }
 
 /**
@@ -235,6 +263,8 @@ export async function processVideoWithFFmpeg(
       });
       await instance.deleteFile(thumbName);
     }
+
+    processedCount++; // 処理カウントをインクリメント
 
     return {
       optimizedBlob: finalBlob,

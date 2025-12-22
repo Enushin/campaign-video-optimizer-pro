@@ -9,6 +9,7 @@ import {
   processVideoWithFFmpeg,
   loadFFmpeg,
   formatBytes,
+  resetFFmpeg,
 } from "./utils/videoProcessor";
 import {
   Zap,
@@ -22,7 +23,13 @@ import {
   Play,
   Settings2,
   Layers,
+  Image,
+  RotateCcw,
+  AlertTriangle,
 } from "lucide-react";
+
+// WAVE処理の設定
+const WAVE_SIZE = 5; // 1WAVEあたりの処理数
 
 const App: React.FC = () => {
   const [config, setConfig] = useState<OptimizationConfig>(DEFAULT_CONFIG);
@@ -33,6 +40,8 @@ const App: React.FC = () => {
     "unloaded" | "loading" | "ready"
   >("unloaded");
   const [showSettings, setShowSettings] = useState(false);
+  const [currentWave, setCurrentWave] = useState(0);
+  const [totalWaves, setTotalWaves] = useState(0);
 
   useEffect(() => {
     const init = async () => {
@@ -137,31 +146,44 @@ const App: React.FC = () => {
     [processVideo],
   );
 
-  // 並列処理用のヘルパー関数（同時実行数を制限）
-  const processWithConcurrency = async (
-    items: VideoFile[],
-    concurrency: number,
-    processor: (item: VideoFile) => Promise<void>,
-  ) => {
-    const queue = [...items];
-    const executing: Promise<void>[] = [];
+  // WAVE方式でバッチ処理（メモリ安定性重視）
+  const processInWaves = async (items: VideoFile[]) => {
+    const waves = Math.ceil(items.length / WAVE_SIZE);
+    setTotalWaves(waves);
 
-    while (queue.length > 0 || executing.length > 0) {
-      // キューからアイテムを取り出して処理開始
-      while (queue.length > 0 && executing.length < concurrency) {
-        const item = queue.shift()!;
-        const promise = processor(item).finally(() => {
-          const idx = executing.indexOf(promise);
-          if (idx > -1) executing.splice(idx, 1);
-        });
-        executing.push(promise);
+    for (let waveIndex = 0; waveIndex < waves; waveIndex++) {
+      setCurrentWave(waveIndex + 1);
+      const start = waveIndex * WAVE_SIZE;
+      const end = Math.min(start + WAVE_SIZE, items.length);
+      const waveItems = items.slice(start, end);
+
+      console.log(
+        `WAVE ${waveIndex + 1}/${waves}: Processing ${waveItems.length} videos`,
+      );
+
+      // WAVE内は順次処理（FFmpegはシングルインスタンス）
+      for (const v of waveItems) {
+        try {
+          await processVideo(v);
+        } catch (err) {
+          // エラーは processVideo 内で処理済み、スキップして続行
+          console.error(`Processing failed for ${v.name}:`, err);
+        }
       }
 
-      // 少なくとも1つの処理が完了するまで待機
-      if (executing.length > 0) {
-        await Promise.race(executing);
+      // WAVE完了後にメモリクリア（最後のWAVE以外）
+      if (waveIndex < waves - 1) {
+        console.log(`WAVE ${waveIndex + 1} completed. Clearing memory...`);
+        try {
+          await resetFFmpeg();
+        } catch (e) {
+          console.warn("FFmpeg reset failed, continuing:", e);
+        }
       }
     }
+
+    setCurrentWave(0);
+    setTotalWaves(0);
   };
 
   const handleProcessAll = async () => {
@@ -170,20 +192,45 @@ const App: React.FC = () => {
       (v) => v.status !== "completed" && v.status !== "error",
     );
 
-    // 同時処理数: 2（メモリと安定性のバランス）
-    // FFmpegはシングルインスタンスなので実質的には1つずつだが、
-    // エラー時に止まらず次に進むことを保証
-    const CONCURRENCY = 1; // FFmpegの制約上、実質1が安全
+    if (pending.length === 0) {
+      setIsProcessingAll(false);
+      return;
+    }
 
-    await processWithConcurrency(pending, CONCURRENCY, async (v) => {
-      try {
-        await processVideo(v);
-      } catch (err) {
-        // エラーは processVideo 内で処理済み、ここでは無視して続行
-        console.error(`Processing failed for ${v.name}:`, err);
-      }
-    });
+    await processInWaves(pending);
+    setIsProcessingAll(false);
+  };
 
+  // 失敗した動画のみ再処理
+  const handleRetryFailed = async () => {
+    setIsProcessingAll(true);
+    const failed = videos.filter((v) => v.status === "error");
+
+    if (failed.length === 0) {
+      setIsProcessingAll(false);
+      return;
+    }
+
+    // エラーステータスをpendingにリセット
+    setVideos((prev) =>
+      prev.map((v) =>
+        v.status === "error"
+          ? { ...v, status: "pending", progress: 0, error: undefined }
+          : v,
+      ),
+    );
+
+    // 最新のvideos状態を取得するために少し待つ
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // FFmpegをリセットしてから再処理
+    try {
+      await resetFFmpeg();
+    } catch (e) {
+      console.warn("FFmpeg reset failed before retry:", e);
+    }
+
+    await processInWaves(failed);
     setIsProcessingAll(false);
   };
 
@@ -227,9 +274,49 @@ const App: React.FC = () => {
     }
   };
 
+  const [isZippingThumbnails, setIsZippingThumbnails] = useState(false);
+
+  const handleBatchThumbnailDownload = async () => {
+    const completed = videos.filter(
+      (v) => v.status === "completed" && v.thumbnails.length > 0,
+    );
+    if (completed.length === 0) return;
+
+    setIsZippingThumbnails(true);
+    try {
+      const zip = new JSZip();
+
+      completed.forEach((v) => {
+        const baseName = v.name.replace(/\.[^/.]+$/, "");
+        // 1枚目のサムネイルのみ保存
+        if (v.thumbnails[0]) {
+          zip.file(`${baseName}_thumb.jpg`, v.thumbnails[0].blob);
+        }
+      });
+
+      const content = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(content);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `thumbnails_${new Date().getTime()}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("サムネイルZIP作成中にエラーが発生しました。");
+    } finally {
+      setIsZippingThumbnails(false);
+    }
+  };
+
   const stats = {
     count: videos.length,
     completed: videos.filter((v) => v.status === "completed").length,
+    failed: videos.filter((v) => v.status === "error").length,
+    pending: videos.filter(
+      (v) => v.status === "pending" || v.status === "processing",
+    ).length,
     totalSaved: videos.reduce(
       (acc, v) =>
         acc +
@@ -391,9 +478,16 @@ const App: React.FC = () => {
                 <div className="space-y-2">
                   <div className="flex justify-between text-xs">
                     <span className="text-slate-500">進捗</span>
-                    <span className="text-slate-300 font-medium">
-                      {stats.completed} / {stats.count}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-300 font-medium">
+                        {stats.completed} / {stats.count}
+                      </span>
+                      {stats.failed > 0 && (
+                        <span className="text-red-400 font-medium">
+                          ({stats.failed} 失敗)
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="h-2 bg-white/5 rounded-full overflow-hidden">
                     <div
@@ -403,6 +497,13 @@ const App: React.FC = () => {
                       style={{ width: `${progressPercent}%` }}
                     />
                   </div>
+                  {/* WAVE進捗表示 */}
+                  {isProcessingAll && totalWaves > 0 && (
+                    <p className="text-xs text-indigo-400 flex items-center gap-1">
+                      <Loader2 size={12} className="animate-spin" />
+                      WAVE {currentWave} / {totalWaves} 処理中...
+                    </p>
+                  )}
                   {stats.totalSaved > 0 && (
                     <p className="text-xs text-emerald-400 flex items-center gap-1">
                       <CheckCircle2 size={12} />
@@ -418,7 +519,8 @@ const App: React.FC = () => {
                 disabled={
                   isProcessingAll ||
                   engineStatus !== "ready" ||
-                  videos.length === 0
+                  videos.length === 0 ||
+                  stats.pending === 0
                 }
                 className="w-full btn-primary flex items-center justify-center gap-2"
               >
@@ -437,22 +539,51 @@ const App: React.FC = () => {
                 )}
               </button>
 
-              {/* Download Button */}
-              {stats.completed === stats.count && stats.count > 0 && (
+              {/* Retry Failed Button */}
+              {stats.failed > 0 && !isProcessingAll && (
                 <button
-                  onClick={handleBatchDownload}
-                  disabled={isZipping}
-                  className="w-full btn-secondary flex items-center justify-center gap-2 bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20"
+                  onClick={handleRetryFailed}
+                  disabled={isProcessingAll || engineStatus !== "ready"}
+                  className="w-full btn-secondary flex items-center justify-center gap-2 bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20"
                 >
-                  {isZipping ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <>
-                      <Download size={18} />
-                      ZIPでダウンロード
-                    </>
-                  )}
+                  <RotateCcw size={18} />
+                  失敗した動画を再処理 ({stats.failed}件)
                 </button>
+              )}
+
+              {/* Download Buttons - 完了した動画があれば表示 */}
+              {stats.completed > 0 && !isProcessingAll && (
+                <>
+                  <button
+                    onClick={handleBatchDownload}
+                    disabled={isZipping}
+                    className="w-full btn-secondary flex items-center justify-center gap-2 bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20"
+                  >
+                    {isZipping ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <>
+                        <Download size={18} />
+                        ZIPでダウンロード ({stats.completed}件)
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={handleBatchThumbnailDownload}
+                    disabled={isZippingThumbnails}
+                    className="w-full btn-secondary flex items-center justify-center gap-2 bg-indigo-500/10 border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20"
+                  >
+                    {isZippingThumbnails ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <>
+                        <Image size={18} />
+                        サムネイル一括保存
+                      </>
+                    )}
+                  </button>
+                </>
               )}
             </div>
 
