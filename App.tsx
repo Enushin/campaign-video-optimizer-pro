@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import JSZip from "jszip";
 import { VideoFile, OptimizationConfig } from "./types";
 import { DEFAULT_CONFIG } from "./constants";
@@ -26,6 +26,7 @@ import {
   Image,
   RotateCcw,
   AlertTriangle,
+  StopCircle,
 } from "lucide-react";
 
 // WAVE処理の設定
@@ -42,6 +43,8 @@ const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [currentWave, setCurrentWave] = useState(0);
   const [totalWaves, setTotalWaves] = useState(0);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const cancelRef = useRef(false);
 
   useEffect(() => {
     const init = async () => {
@@ -152,6 +155,12 @@ const App: React.FC = () => {
     setTotalWaves(waves);
 
     for (let waveIndex = 0; waveIndex < waves; waveIndex++) {
+      // キャンセルチェック（WAVE開始前）
+      if (cancelRef.current) {
+        console.log("Processing cancelled by user");
+        break;
+      }
+
       setCurrentWave(waveIndex + 1);
       const start = waveIndex * WAVE_SIZE;
       const end = Math.min(start + WAVE_SIZE, items.length);
@@ -163,6 +172,12 @@ const App: React.FC = () => {
 
       // WAVE内は順次処理（FFmpegはシングルインスタンス）
       for (const v of waveItems) {
+        // キャンセルチェック（各動画処理前）
+        if (cancelRef.current) {
+          console.log("Processing cancelled by user");
+          break;
+        }
+
         try {
           await processVideo(v);
         } catch (err) {
@@ -170,6 +185,9 @@ const App: React.FC = () => {
           console.error(`Processing failed for ${v.name}:`, err);
         }
       }
+
+      // キャンセルされた場合はループを抜ける
+      if (cancelRef.current) break;
 
       // WAVE完了後にメモリクリア（最後のWAVE以外）
       if (waveIndex < waves - 1) {
@@ -186,8 +204,19 @@ const App: React.FC = () => {
     setTotalWaves(0);
   };
 
+  // 処理をキャンセル
+  const handleCancelProcess = () => {
+    setIsCancelling(true);
+    cancelRef.current = true;
+    console.log("Cancel requested - will stop after current video");
+  };
+
   const handleProcessAll = async () => {
+    // キャンセルフラグをリセット
+    cancelRef.current = false;
+    setIsCancelling(false);
     setIsProcessingAll(true);
+
     const pending = videos.filter(
       (v) => v.status !== "completed" && v.status !== "error",
     );
@@ -198,12 +227,20 @@ const App: React.FC = () => {
     }
 
     await processInWaves(pending);
+
+    // 処理終了後にキャンセル状態をリセット
+    cancelRef.current = false;
+    setIsCancelling(false);
     setIsProcessingAll(false);
   };
 
   // 失敗した動画のみ再処理
   const handleRetryFailed = async () => {
+    // キャンセルフラグをリセット
+    cancelRef.current = false;
+    setIsCancelling(false);
     setIsProcessingAll(true);
+
     const failed = videos.filter((v) => v.status === "error");
 
     if (failed.length === 0) {
@@ -231,6 +268,10 @@ const App: React.FC = () => {
     }
 
     await processInWaves(failed);
+
+    // 処理終了後にキャンセル状態をリセット
+    cancelRef.current = false;
+    setIsCancelling(false);
     setIsProcessingAll(false);
   };
 
@@ -513,31 +554,45 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Process Button */}
-              <button
-                onClick={handleProcessAll}
-                disabled={
-                  isProcessingAll ||
-                  engineStatus !== "ready" ||
-                  videos.length === 0 ||
-                  stats.pending === 0
-                }
-                className="w-full btn-primary flex items-center justify-center gap-2"
-              >
-                {isProcessingAll ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    処理中...
-                  </>
-                ) : engineStatus === "loading" ? (
-                  <>エンジン読込中...</>
-                ) : (
-                  <>
-                    <Play size={18} />
-                    圧縮を開始
-                  </>
-                )}
-              </button>
+              {/* Process / Cancel Button */}
+              {isProcessingAll ? (
+                <button
+                  onClick={handleCancelProcess}
+                  disabled={isCancelling}
+                  className="w-full btn-secondary flex items-center justify-center gap-2 bg-red-500/10 border-red-500/30 text-red-400 hover:bg-red-500/20"
+                >
+                  {isCancelling ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      停止中...（現在の動画完了後）
+                    </>
+                  ) : (
+                    <>
+                      <StopCircle size={18} />
+                      処理を中断
+                    </>
+                  )}
+                </button>
+              ) : (
+                <button
+                  onClick={handleProcessAll}
+                  disabled={
+                    engineStatus !== "ready" ||
+                    videos.length === 0 ||
+                    stats.pending === 0
+                  }
+                  className="w-full btn-primary flex items-center justify-center gap-2"
+                >
+                  {engineStatus === "loading" ? (
+                    <>エンジン読込中...</>
+                  ) : (
+                    <>
+                      <Play size={18} />
+                      圧縮を開始
+                    </>
+                  )}
+                </button>
+              )}
 
               {/* Retry Failed Button */}
               {stats.failed > 0 && !isProcessingAll && (

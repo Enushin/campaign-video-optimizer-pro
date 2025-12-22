@@ -1,3 +1,5 @@
+export type ThumbnailAspectRatio = "16:9" | "1:1" | "9:16" | "original";
+
 export interface OptimizationConfig {
   targetSizeMB: number;
   maxLimitMB: number;
@@ -7,6 +9,8 @@ export interface OptimizationConfig {
   thumbnailWidthPx: number;
   thumbnailOffsetSeconds: number;
   thumbnailTargetSizeKB: number;
+  thumbnailAspectRatio: ThumbnailAspectRatio;
+  thumbnailFaceDetection: boolean; // 顔検出クロップを有効にする
 }
 
 export type ProcessingStatus = "pending" | "processing" | "completed" | "error";

@@ -1,7 +1,15 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile, toBlobURL } from "@ffmpeg/util";
-import { OptimizationConfig, ThumbnailData } from "../types";
+import {
+  OptimizationConfig,
+  ThumbnailData,
+  ThumbnailAspectRatio,
+} from "../types";
 import { getOptimalThumbnailTimestamps } from "./frameAnalyzer";
+import {
+  loadFaceDetectionModel,
+  cropImageWithFaceDetection,
+} from "./faceDetector";
 
 let ffmpeg: FFmpeg | null = null;
 let isProcessing = false;
@@ -10,6 +18,33 @@ let processedCount = 0; // 処理カウンター（メモリクリア判定用�
 // 処理タイムアウト（秒）- 動画の長さに応じて動的に計算
 const BASE_TIMEOUT_SECONDS = 60;
 const TIMEOUT_PER_MINUTE_OF_VIDEO = 120; // 1分の動画につき2分のタイムアウト
+
+/**
+ * アスペクト比に応じたFFmpegビデオフィルターを生成
+ * 中央クロップでアスペクト比を調整
+ */
+function getThumbnailVideoFilter(
+  aspectRatio: ThumbnailAspectRatio,
+  outputWidth: number,
+): string {
+  switch (aspectRatio) {
+    case "16:9":
+      // 16:9にクロップ（中央）してからスケール
+      // 元が縦長の場合は上下を切り取り、元が横長の場合はそのまま
+      return `crop='if(gt(iw/ih,16/9),ih*16/9,iw)':'if(gt(iw/ih,16/9),ih,iw*9/16)',scale=${outputWidth}:-1`;
+    case "1:1":
+      // 正方形にクロップ（中央）してからスケール
+      return `crop='min(iw,ih)':'min(iw,ih)',scale=${outputWidth}:-1`;
+    case "9:16":
+      // 9:16にクロップ（中央）してからスケール
+      // 高さ基準でスケールする
+      return `crop='if(gt(iw/ih,9/16),ih*9/16,iw)':'if(gt(iw/ih,9/16),ih,iw*16/9)',scale=-1:${Math.round((outputWidth * 16) / 9)}`;
+    case "original":
+    default:
+      // クロップなし、横幅基準でスケール
+      return `scale=${outputWidth}:-1`;
+  }
+}
 
 /**
  * タイムアウト付きPromiseラッパー
@@ -238,6 +273,31 @@ export async function processVideoWithFFmpeg(
       ];
     }
 
+    // 顔検出モデルを事前に読み込み（顔検出が有効な場合）
+    if (
+      config.thumbnailFaceDetection &&
+      config.thumbnailAspectRatio !== "original"
+    ) {
+      try {
+        await loadFaceDetectionModel();
+      } catch (e) {
+        console.warn("Face detection model load failed, will use center crop");
+      }
+    }
+
+    // 顔検出が有効な場合は元のアスペクト比で抽出し、後でクロップ
+    // 無効な場合はFFmpegで直接クロップ
+    const useFaceDetection =
+      config.thumbnailFaceDetection &&
+      config.thumbnailAspectRatio !== "original";
+
+    const thumbnailFilter = useFaceDetection
+      ? `scale=${config.thumbnailWidthPx * 2}:-1` // 顔検出用に大きめに抽出
+      : getThumbnailVideoFilter(
+          config.thumbnailAspectRatio,
+          config.thumbnailWidthPx,
+        );
+
     for (let i = 0; i < timePoints.length; i++) {
       const t = timePoints[i];
       const thumbName = `thumb_${i}.jpg`;
@@ -251,11 +311,26 @@ export async function processVideoWithFFmpeg(
         "-q:v",
         "2",
         "-vf",
-        `scale=${config.thumbnailWidthPx}:-1`,
+        thumbnailFilter,
         thumbName,
       ]);
       const thumbData = await instance.readFile(thumbName);
-      const thumbBlob = new Blob([thumbData], { type: "image/jpeg" });
+      let thumbBlob = new Blob([thumbData], { type: "image/jpeg" });
+
+      // 顔検出クロップを実行
+      if (useFaceDetection) {
+        try {
+          thumbBlob = await cropImageWithFaceDetection(
+            thumbBlob,
+            config.thumbnailAspectRatio,
+            config.thumbnailWidthPx,
+          );
+        } catch (e) {
+          console.warn(`Face detection crop failed for thumbnail ${i + 1}:`, e);
+          // フォールバック：中央クロップ
+        }
+      }
+
       thumbnails.push({
         url: URL.createObjectURL(thumbBlob),
         blob: thumbBlob,

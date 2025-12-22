@@ -9,6 +9,8 @@ export const DEFAULT_CONFIG: OptimizationConfig = {
   thumbnailWidthPx: 1000,
   thumbnailOffsetSeconds: 1.0,
   thumbnailTargetSizeKB: 100,
+  thumbnailAspectRatio: "16:9", // デフォルトは横長
+  thumbnailFaceDetection: true, // デフォルトで顔検出を有効
 };
 
 export const ALLOWED_EXTENSIONS = [".mp4", ".mov", ".avi", ".m4v"];
