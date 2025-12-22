@@ -30,7 +30,41 @@ import {
 } from "lucide-react";
 
 // WAVE処理の設定
-const WAVE_SIZE = 5; // 1WAVEあたりの処理数
+const WAVE_SIZE = 10; // 1WAVEあたりの処理数（メモリリセット間隔）
+const RESET_EVERY = 5; // メモリ安定性のためのFFmpegリセット間隔
+const MIN_PROCESS_TIMEOUT_MS = 120000;
+const MAX_PROCESS_TIMEOUT_MS = 600000;
+const PROCESS_TIMEOUT_PER_MB_MS = 60000;
+
+const withTimeout = async <T,>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> => {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+    promise
+      .then((result) => {
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+};
+
+const getProcessTimeoutMs = (file: File) => {
+  const sizeMb = file.size / (1024 * 1024);
+  const estimate = sizeMb * PROCESS_TIMEOUT_PER_MB_MS;
+  return Math.min(
+    MAX_PROCESS_TIMEOUT_MS,
+    Math.max(MIN_PROCESS_TIMEOUT_MS, estimate),
+  );
+};
 
 const App: React.FC = () => {
   const [config, setConfig] = useState<OptimizationConfig>(DEFAULT_CONFIG);
@@ -71,12 +105,27 @@ const App: React.FC = () => {
       status: "pending",
       progress: 0,
       thumbnails: [],
+      selectedThumbnailIndex: undefined,
     }));
     setVideos((prev) => [...prev, ...newVideos]);
   }, []);
 
   const handleRemoveVideo = useCallback((id: string) => {
-    setVideos((prev) => prev.filter((v) => v.id !== id));
+    setVideos((prev) => {
+      const target = prev.find((v) => v.id === id);
+      if (target) {
+        target.thumbnails.forEach((t) => URL.revokeObjectURL(t.url));
+      }
+      return prev.filter((v) => v.id !== id);
+    });
+  }, []);
+
+  const handleSelectThumbnail = useCallback((id: string, index: number) => {
+    setVideos((prev) =>
+      prev.map((v) =>
+        v.id === id ? { ...v, selectedThumbnailIndex: index } : v,
+      ),
+    );
   }, []);
 
   const processVideo = useCallback(
@@ -84,24 +133,41 @@ const App: React.FC = () => {
       if (engineStatus !== "ready") return;
 
       try {
+        // 既存のサムネイルURLを解放（再処理時のメモリ対策）
+        if (v.thumbnails.length > 0) {
+          v.thumbnails.forEach((t) => URL.revokeObjectURL(t.url));
+        }
         setVideos((prev) =>
           prev.map((item) =>
             item.id === v.id
-              ? { ...item, status: "processing", progress: 0 }
+              ? {
+                  ...item,
+                  status: "processing",
+                  progress: 0,
+                  thumbnails: [],
+                  selectedThumbnailIndex: undefined,
+                  optimizedBlob: undefined,
+                  optimizedSize: undefined,
+                  projectedBitrate: undefined,
+                  duration: undefined,
+                }
               : item,
           ),
         );
 
-        const result = await processVideoWithFFmpeg(
-          v.file,
-          config,
-          (progress) => {
+        const timeoutMs = getProcessTimeoutMs(v.file);
+        const result = await withTimeout(
+          processVideoWithFFmpeg(v.file, config, (progress) => {
             setVideos((prev) =>
               prev.map((item) =>
-                item.id === v.id ? { ...item, progress } : item,
+                item.id === v.id && item.status === "processing"
+                  ? { ...item, progress }
+                  : item,
               ),
             );
-          },
+          }),
+          timeoutMs,
+          `処理がタイムアウトしました（${Math.round(timeoutMs / 1000)}秒）。`,
         );
 
         setVideos((prev) =>
@@ -121,10 +187,26 @@ const App: React.FC = () => {
           ),
         );
       } catch (err: any) {
+        const message =
+          err instanceof Error
+            ? err.message
+            : typeof err === "string"
+              ? err
+              : "不明なエラーが発生しました。";
+        if (
+          /memory access out of bounds/i.test(message) ||
+          /タイムアウト/.test(message)
+        ) {
+          try {
+            await resetFFmpeg(true);
+          } catch (e) {
+            console.warn("FFmpeg reset failed after timeout/error:", e);
+          }
+        }
         setVideos((prev) =>
           prev.map((item) =>
             item.id === v.id
-              ? { ...item, status: "error", error: err.message }
+              ? { ...item, status: "error", error: message }
               : item,
           ),
         );
@@ -171,7 +253,7 @@ const App: React.FC = () => {
       );
 
       // WAVE内は順次処理（FFmpegはシングルインスタンス）
-      for (const v of waveItems) {
+      for (const [index, v] of waveItems.entries()) {
         // キャンセルチェック（各動画処理前）
         if (cancelRef.current) {
           console.log("Processing cancelled by user");
@@ -184,18 +266,29 @@ const App: React.FC = () => {
           // エラーは processVideo 内で処理済み、スキップして続行
           console.error(`Processing failed for ${v.name}:`, err);
         }
+
+        // メモリ安定性のために定期的にFFmpegをリセット
+        if (!cancelRef.current && (index + 1) % RESET_EVERY === 0) {
+          try {
+            await resetFFmpeg();
+          } catch (e) {
+            console.warn("FFmpeg reset failed during wave:", e);
+          }
+        }
       }
 
       // キャンセルされた場合はループを抜ける
       if (cancelRef.current) break;
 
-      // WAVE完了後にメモリクリア（最後のWAVE以外）
+      // WAVE完了後に少し待機（メモリ解放を促す）
       if (waveIndex < waves - 1) {
-        console.log(`WAVE ${waveIndex + 1} completed. Clearing memory...`);
+        console.log(`WAVE ${waveIndex + 1} completed. Waiting for GC...`);
+        // メモリ解放のための待機時間
+        await new Promise((resolve) => setTimeout(resolve, 2000));
         try {
           await resetFFmpeg();
         } catch (e) {
-          console.warn("FFmpeg reset failed, continuing:", e);
+          console.warn("FFmpeg reset failed after wave:", e);
         }
       }
     }
@@ -329,9 +422,10 @@ const App: React.FC = () => {
 
       completed.forEach((v) => {
         const baseName = v.name.replace(/\.[^/.]+$/, "");
-        // 1枚目のサムネイルのみ保存
-        if (v.thumbnails[0]) {
-          zip.file(`${baseName}_thumb.jpg`, v.thumbnails[0].blob);
+        const selectedIndex = v.selectedThumbnailIndex ?? 0;
+        const selectedThumb = v.thumbnails[selectedIndex] || v.thumbnails[0];
+        if (selectedThumb) {
+          zip.file(`${baseName}_thumb.jpg`, selectedThumb.blob);
         }
       });
 
@@ -490,6 +584,7 @@ const App: React.FC = () => {
                         config={config}
                         onRemove={handleRemoveVideo}
                         onRetry={handleRetryVideo}
+                        onSelectThumbnail={handleSelectThumbnail}
                       />
                     </div>
                   ))}

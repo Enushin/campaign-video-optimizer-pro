@@ -1,17 +1,43 @@
-import * as faceapi from "@vladmandic/face-api";
 import { ThumbnailAspectRatio } from "../types";
 
+// 動的インポート用の型定義
+type FaceApiModule = typeof import("@vladmandic/face-api");
+
+let faceapi: FaceApiModule | null = null;
 let isModelLoaded = false;
 let isModelLoading = false;
+const MODEL_LOAD_TIMEOUT_MS = 15000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error("Face detection model load timed out"));
+    }, timeoutMs);
+
+    promise
+      .then((result) => {
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
 
 /**
- * 顔検出モデルの読み込み
+ * 顔検出モデルの読み込み（遅延読み込み）
  */
 export async function loadFaceDetectionModel(): Promise<void> {
   if (isModelLoaded) return;
   if (isModelLoading) {
     // 読み込み中の場合は完了を待つ
+    const start = Date.now();
     while (isModelLoading) {
+      if (Date.now() - start > MODEL_LOAD_TIMEOUT_MS) {
+        throw new Error("Face detection model load timed out");
+      }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     return;
@@ -20,10 +46,19 @@ export async function loadFaceDetectionModel(): Promise<void> {
   isModelLoading = true;
 
   try {
+    // face-apiを動的にインポート（初回アクセス時のみ）
+    if (!faceapi) {
+      console.log("Loading face-api.js module...");
+      faceapi = await import("@vladmandic/face-api");
+    }
+
     // CDNからモデルを読み込み
     const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model";
 
-    await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+    await withTimeout(
+      faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+      MODEL_LOAD_TIMEOUT_MS,
+    );
     console.log("Face detection model loaded");
     isModelLoaded = true;
   } catch (error) {
@@ -61,8 +96,12 @@ interface CropArea {
 export async function detectFaces(
   imageElement: HTMLImageElement | HTMLCanvasElement,
 ): Promise<FaceBox[]> {
-  if (!isModelLoaded) {
+  if (!isModelLoaded || !faceapi) {
     await loadFaceDetectionModel();
+  }
+
+  if (!faceapi) {
+    throw new Error("Face API not loaded");
   }
 
   const detections = await faceapi.detectAllFaces(

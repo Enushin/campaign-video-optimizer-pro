@@ -14,6 +14,7 @@ import {
   Loader2,
   X,
   RotateCcw,
+  Check,
 } from "lucide-react";
 
 interface Props {
@@ -21,6 +22,7 @@ interface Props {
   config: OptimizationConfig;
   onRemove?: (id: string) => void;
   onRetry?: (video: VideoFile) => void;
+  onSelectThumbnail?: (id: string, index: number) => void;
 }
 
 export const VideoCard: React.FC<Props> = ({
@@ -28,6 +30,7 @@ export const VideoCard: React.FC<Props> = ({
   config,
   onRemove,
   onRetry,
+  onSelectThumbnail,
 }) => {
   const [showPreview, setShowPreview] = useState(false);
   const reduction =
@@ -177,10 +180,22 @@ export const VideoCard: React.FC<Props> = ({
         <div className="grid grid-cols-3 gap-2 mb-4">
           {[0, 1, 2].map((idx) => {
             const thumb = v.thumbnails[idx];
+            const isSelected =
+              v.selectedThumbnailIndex !== undefined
+                ? v.selectedThumbnailIndex === idx
+                : idx === 0;
             return (
               <div
                 key={idx}
-                className="relative aspect-video bg-white/5 rounded-lg overflow-hidden group/thumb"
+                className={`relative aspect-video rounded-lg overflow-hidden group/thumb cursor-pointer transition-all ${
+                  isSelected
+                    ? "ring-2 ring-indigo-400 ring-offset-2 ring-offset-black/60"
+                    : "bg-white/5"
+                }`}
+                onClick={() => {
+                  if (!thumb) return;
+                  onSelectThumbnail?.(v.id, idx);
+                }}
               >
                 {thumb ? (
                   <>
@@ -189,20 +204,28 @@ export const VideoCard: React.FC<Props> = ({
                       className="w-full h-full object-cover transition-transform duration-300 group-hover/thumb:scale-105"
                       alt={`Thumbnail ${idx + 1}`}
                     />
+                    {isSelected && (
+                      <div className="absolute top-1 left-1 px-1.5 py-0.5 bg-indigo-500/80 text-white text-[9px] rounded font-bold flex items-center gap-1">
+                        <Check size={10} />
+                        選択中
+                      </div>
+                    )}
                     <div className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black/70 backdrop-blur-sm text-[9px] text-white rounded font-medium">
                       {thumb.timestamp.toFixed(1)}s
                     </div>
                     {v.status === "completed" && (
                       <button
-                        onClick={() =>
+                        onClick={(e) => {
+                          e.stopPropagation();
                           downloadFile(
                             thumb.blob,
                             `${v.name.split(".")[0]}_thumb_${idx + 1}.jpg`,
-                          )
-                        }
-                        className="absolute inset-0 bg-indigo-500/80 backdrop-blur-sm opacity-0 group-hover/thumb:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1"
+                          );
+                        }}
+                        className="absolute top-1 right-1 p-1.5 rounded-full bg-indigo-500/90 text-white opacity-0 group-hover/thumb:opacity-100 transition-opacity shadow-lg shadow-black/30"
+                        title="このサムネイルをダウンロード"
                       >
-                        <Download size={14} className="text-white" />
+                        <Download size={12} className="text-white" />
                       </button>
                     )}
                   </>

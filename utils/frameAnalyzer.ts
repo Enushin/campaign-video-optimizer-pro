@@ -65,6 +65,7 @@ export async function findNonBlackFrame(
   brightnessThreshold: number = 30,
 ): Promise<number> {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const video = document.createElement("video");
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
@@ -82,10 +83,19 @@ export async function findNonBlackFrame(
     const searchStep = 0.5; // 0.5秒ごとに検索
     let currentTime = startTime;
     const maxSearchTime = Math.min(endTime, startTime + 10); // 最大10秒間検索
+    const timeoutMs = 8000; // seekedが来ない場合のフォールバック
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(startTime);
+    }, timeoutMs);
 
     const checkFrame = () => {
+      if (settled) return;
       if (currentTime >= maxSearchTime) {
         // タイムアウト - 最初の時間をフォールバックとして使用
+        settled = true;
         cleanup();
         resolve(startTime);
         return;
@@ -95,10 +105,12 @@ export async function findNonBlackFrame(
     };
 
     const handleSeeked = () => {
+      if (settled) return;
       const brightness = analyzeFrameBrightness(video, canvas, ctx);
 
       if (brightness > brightnessThreshold) {
         // 黒くないフレームを発見
+        settled = true;
         cleanup();
         resolve(currentTime);
       } else {
@@ -112,6 +124,7 @@ export async function findNonBlackFrame(
       video.removeEventListener("seeked", handleSeeked);
       video.removeEventListener("loadedmetadata", onLoadedMetadata);
       URL.revokeObjectURL(url);
+      clearTimeout(timeoutId);
     };
 
     const onLoadedMetadata = () => {
@@ -121,6 +134,8 @@ export async function findNonBlackFrame(
 
     video.addEventListener("loadedmetadata", onLoadedMetadata);
     video.addEventListener("error", () => {
+      if (settled) return;
+      settled = true;
       cleanup();
       resolve(startTime); // エラー時はフォールバック
     });

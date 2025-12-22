@@ -31,6 +31,7 @@ export interface VideoFile {
   progress: number;
   optimizedSize?: number;
   thumbnails: ThumbnailData[];
+  selectedThumbnailIndex?: number;
   optimizedBlob?: Blob;
   projectedBitrate?: number;
   error?: string;
