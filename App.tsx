@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import JSZip from "jszip";
-import { VideoFile, OptimizationConfig } from "./types";
-import { DEFAULT_CONFIG } from "./constants";
+import { VideoFile, ProcessingStats } from "./types";
 import { FileUploader } from "./components/FileUploader";
 import { VideoCard } from "./components/ProcessingList";
 import { OptimizationSettings } from "./components/OptimizationSettings";
+import { SummaryReport } from "./components/SummaryReport";
+import { useSettings } from "./hooks/useSettings";
 import {
   processVideoWithFFmpeg,
   loadFFmpeg,
@@ -25,8 +26,9 @@ import {
   Layers,
   Image,
   RotateCcw,
-  AlertTriangle,
   StopCircle,
+  Clock,
+  Timer,
 } from "lucide-react";
 
 // WAVE処理の設定
@@ -66,8 +68,19 @@ const getProcessTimeoutMs = (file: File) => {
   );
 };
 
+// 時間フォーマット用ヘルパー
+const formatTime = (seconds: number): string => {
+  if (seconds < 60) return `${Math.round(seconds)}秒`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  return `${mins}分${secs}秒`;
+};
+
 const App: React.FC = () => {
-  const [config, setConfig] = useState<OptimizationConfig>(DEFAULT_CONFIG);
+  // 設定管理（LocalStorage自動保存付き）
+  const { config, setConfig, exportSettings, importSettings, resetSettings } =
+    useSettings();
+
   const [videos, setVideos] = useState<VideoFile[]>([]);
   const [isProcessingAll, setIsProcessingAll] = useState(false);
   const [isZipping, setIsZipping] = useState(false);
@@ -79,6 +92,17 @@ const App: React.FC = () => {
   const [totalWaves, setTotalWaves] = useState(0);
   const [isCancelling, setIsCancelling] = useState(false);
   const cancelRef = useRef(false);
+
+  // 処理統計（時間計測用）
+  const [processingStats, setProcessingStats] = useState<ProcessingStats>({
+    startTime: null,
+    endTime: null,
+    totalProcessed: 0,
+    currentVideoStartTime: null,
+    estimatedTimeRemaining: null,
+    averageProcessingTime: null,
+  });
+  const processedTimesRef = useRef<number[]>([]);
 
   useEffect(() => {
     const init = async () => {
@@ -129,8 +153,14 @@ const App: React.FC = () => {
   }, []);
 
   const processVideo = useCallback(
-    async (v: VideoFile) => {
+    async (v: VideoFile, pendingCount: number) => {
       if (engineStatus !== "ready") return;
+
+      const videoStartTime = Date.now();
+      setProcessingStats((prev) => ({
+        ...prev,
+        currentVideoStartTime: videoStartTime,
+      }));
 
       try {
         // 既存のサムネイルURLを解放（再処理時のメモリ対策）
@@ -169,6 +199,26 @@ const App: React.FC = () => {
           timeoutMs,
           `処理がタイムアウトしました（${Math.round(timeoutMs / 1000)}秒）。`,
         );
+
+        // 処理時間を記録
+        const processingTime = (Date.now() - videoStartTime) / 1000;
+        processedTimesRef.current.push(processingTime);
+
+        // 平均処理時間と残り時間を計算
+        const avgTime =
+          processedTimesRef.current.reduce((a, b) => a + b, 0) /
+          processedTimesRef.current.length;
+        const remainingVideos = pendingCount - processedTimesRef.current.length;
+        const estimatedRemaining = avgTime * remainingVideos;
+
+        setProcessingStats((prev) => ({
+          ...prev,
+          totalProcessed: prev.totalProcessed + 1,
+          averageProcessingTime: avgTime,
+          estimatedTimeRemaining:
+            estimatedRemaining > 0 ? estimatedRemaining : null,
+          currentVideoStartTime: null,
+        }));
 
         setVideos((prev) =>
           prev.map((item) =>
@@ -226,7 +276,7 @@ const App: React.FC = () => {
         ),
       );
       // 即座に再処理を開始
-      await processVideo(video);
+      await processVideo(video, 1);
     },
     [processVideo],
   );
@@ -234,6 +284,7 @@ const App: React.FC = () => {
   // WAVE方式でバッチ処理（メモリ安定性重視）
   const processInWaves = async (items: VideoFile[]) => {
     const waves = Math.ceil(items.length / WAVE_SIZE);
+    const totalPending = items.length;
     setTotalWaves(waves);
 
     for (let waveIndex = 0; waveIndex < waves; waveIndex++) {
@@ -261,7 +312,7 @@ const App: React.FC = () => {
         }
 
         try {
-          await processVideo(v);
+          await processVideo(v, totalPending);
         } catch (err) {
           // エラーは processVideo 内で処理済み、スキップして続行
           console.error(`Processing failed for ${v.name}:`, err);
@@ -310,6 +361,17 @@ const App: React.FC = () => {
     setIsCancelling(false);
     setIsProcessingAll(true);
 
+    // 処理統計をリセット
+    processedTimesRef.current = [];
+    setProcessingStats({
+      startTime: Date.now(),
+      endTime: null,
+      totalProcessed: 0,
+      currentVideoStartTime: null,
+      estimatedTimeRemaining: null,
+      averageProcessingTime: null,
+    });
+
     const pending = videos.filter(
       (v) => v.status !== "completed" && v.status !== "error",
     );
@@ -320,6 +382,14 @@ const App: React.FC = () => {
     }
 
     await processInWaves(pending);
+
+    // 処理終了時間を記録
+    setProcessingStats((prev) => ({
+      ...prev,
+      endTime: Date.now(),
+      estimatedTimeRemaining: null,
+      currentVideoStartTime: null,
+    }));
 
     // 処理終了後にキャンセル状態をリセット
     cancelRef.current = false;
@@ -368,6 +438,18 @@ const App: React.FC = () => {
     setIsProcessingAll(false);
   };
 
+  // ファイル名テンプレートを適用
+  const applyFilenameTemplate = (originalName: string): string => {
+    const baseName = originalName.replace(/\.[^/.]+$/, "");
+    const date = new Date().toISOString().slice(0, 10);
+
+    return config.filenameTemplate
+      .replace("{original}", baseName)
+      .replace("{date}", date)
+      .replace("{platform}", "campaign")
+      .replace("{size}", `${config.targetSizeMB}MB`);
+  };
+
   const handleBatchDownload = async () => {
     const completed = videos.filter((v) => v.status === "completed");
     if (completed.length === 0) return;
@@ -378,11 +460,12 @@ const App: React.FC = () => {
 
       completed.forEach((v) => {
         const baseName = v.name.replace(/\.[^/.]+$/, "");
+        const outputName = applyFilenameTemplate(v.name);
         const folder = zip.folder(baseName);
 
         if (folder) {
           if (v.optimizedBlob) {
-            folder.file(`${baseName}_opt.mp4`, v.optimizedBlob);
+            folder.file(`${outputName}.mp4`, v.optimizedBlob);
           }
 
           const thumbFolder = folder.folder("thumbnails");
@@ -598,7 +681,13 @@ const App: React.FC = () => {
             {/* Settings Panel */}
             {showSettings && (
               <div className="animate-slide-up">
-                <OptimizationSettings config={config} onChange={setConfig} />
+                <OptimizationSettings
+                  config={config}
+                  onChange={setConfig}
+                  onExport={exportSettings}
+                  onImport={importSettings}
+                  onReset={resetSettings}
+                />
               </div>
             )}
 
@@ -640,6 +729,24 @@ const App: React.FC = () => {
                       WAVE {currentWave} / {totalWaves} 処理中...
                     </p>
                   )}
+                  {/* 残り時間・処理速度 */}
+                  {isProcessingAll &&
+                    processingStats.estimatedTimeRemaining && (
+                      <div className="flex items-center gap-3 text-xs">
+                        <span className="text-cyan-400 flex items-center gap-1">
+                          <Clock size={12} />
+                          残り約{" "}
+                          {formatTime(processingStats.estimatedTimeRemaining)}
+                        </span>
+                        {processingStats.averageProcessingTime && (
+                          <span className="text-slate-500 flex items-center gap-1">
+                            <Timer size={12} />
+                            {formatTime(processingStats.averageProcessingTime)}
+                            /動画
+                          </span>
+                        )}
+                      </div>
+                    )}
                   {stats.totalSaved > 0 && (
                     <p className="text-xs text-emerald-400 flex items-center gap-1">
                       <CheckCircle2 size={12} />
@@ -736,6 +843,15 @@ const App: React.FC = () => {
                 </>
               )}
             </div>
+
+            {/* Summary Report */}
+            {videos.length > 0 && (
+              <SummaryReport
+                videos={videos}
+                config={config}
+                processingStats={processingStats}
+              />
+            )}
 
             {/* Info Card */}
             <div className="card p-5 space-y-3">

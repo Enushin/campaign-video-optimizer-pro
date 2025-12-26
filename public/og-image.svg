@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0f23"/>
+      <stop offset="100%" style="stop-color:#1a1a3e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366f1"/>
+      <stop offset="100%" style="stop-color:#8b5cf6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- Decorative circles -->
+  <circle cx="100" cy="100" r="200" fill="#6366f1" opacity="0.1"/>
+  <circle cx="1100" cy="530" r="250" fill="#8b5cf6" opacity="0.1"/>
+
+  <!-- Logo icon -->
+  <g transform="translate(500, 180)">
+    <rect x="0" y="0" width="200" height="140" rx="20" fill="url(#accent)"/>
+    <circle cx="60" cy="70" r="35" fill="#fff" opacity="0.9"/>
+    <circle cx="60" cy="70" r="22" fill="#6366f1"/>
+    <path d="M 160 40 L 190 70 L 160 100" stroke="#fff" stroke-width="12" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="150" cy="35" r="12" fill="#ef4444"/>
+  </g>
+
+  <!-- Title -->
+  <text x="600" y="400" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="56" font-weight="bold" fill="#fff">
+    Campaign Video Optimizer
+  </text>
+
+  <!-- Subtitle -->
+  <text x="600" y="460" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#94a3b8">
+    ブラウザ完結型の動画一括最適化ツール
+  </text>
+
+  <!-- Features -->
+  <text x="600" y="530" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="18" fill="#6366f1">
+    1MB制限厳守 | スマート黒コマ回避 | 顔検出クロップ
+  </text>
+</svg>

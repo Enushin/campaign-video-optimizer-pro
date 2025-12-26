@@ -4,11 +4,48 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Campaign Video Optimizer Pro</title>
+
+    <!-- Favicon & PWA -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.svg" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#6366f1" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+
+    <!-- SEO -->
     <meta
       name="description"
+      content="スマートフォン広告キャンペーン入稿用の動画一括最適化ツール。1MB制限厳守、スマート黒コマ回避、顔検出クロップ。ブラウザ完結型。"
+    />
+    <meta
+      name="keywords"
+      content="動画圧縮,動画最適化,広告入稿,FFmpeg,ブラウザ,サムネイル"
+    />
+
+    <!-- OGP -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Campaign Video Optimizer Pro" />
+    <meta
+      property="og:description"
+      content="スマートフォン広告キャンペーン入稿用の動画一括最適化ツール。ブラウザ完結型。"
+    />
+    <meta property="og:image" content="/og-image.svg" />
+    <meta property="og:locale" content="ja_JP" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Campaign Video Optimizer Pro" />
+    <meta
+      name="twitter:description"
       content="スマートフォン広告キャンペーン入稿用の動画一括最適化ツール"
     />
+    <meta name="twitter:image" content="/og-image.svg" />
+
+    <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -23,5 +60,16 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>
+    <script>
+      // Service Worker 登録
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker
+            .register("/sw.js")
+            .then((reg) => console.log("SW registered:", reg.scope))
+            .catch((err) => console.warn("SW registration failed:", err));
+        });
+      }
+    </script>
   </body>
 </html>

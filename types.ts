@@ -11,6 +11,38 @@ export interface OptimizationConfig {
   thumbnailTargetSizeKB: number;
   thumbnailAspectRatio: ThumbnailAspectRatio;
   thumbnailFaceDetection: boolean; // 顔検出クロップを有効にする
+  filenameTemplate: string; // 出力ファイル名テンプレート
+}
+
+// プラットフォームプリセット用の部分設定
+export type PartialConfig = Partial<
+  Omit<
+    OptimizationConfig,
+    | "minVideoBitrateKbps"
+    | "thumbnailWidthPx"
+    | "thumbnailOffsetSeconds"
+    | "thumbnailTargetSizeKB"
+    | "thumbnailFaceDetection"
+    | "filenameTemplate"
+  >
+>;
+
+export interface PlatformPreset {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  config: PartialConfig;
+}
+
+// 処理統計
+export interface ProcessingStats {
+  startTime: number | null;
+  endTime: number | null;
+  totalProcessed: number;
+  currentVideoStartTime: number | null;
+  estimatedTimeRemaining: number | null;
+  averageProcessingTime: number | null;
 }
 
 export type ProcessingStatus = "pending" | "processing" | "completed" | "error";
