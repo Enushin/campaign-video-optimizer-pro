@@ -5,13 +5,21 @@ import { FileUploader } from "./components/FileUploader";
 import { VideoCard } from "./components/ProcessingList";
 import { OptimizationSettings } from "./components/OptimizationSettings";
 import { SummaryReport } from "./components/SummaryReport";
+import { ValueEstimator } from "./components/ValueEstimator";
 import { useSettings } from "./hooks/useSettings";
+import { ALLOWED_EXTENSIONS } from "./constants";
 import {
   processVideoWithFFmpeg,
   loadFFmpeg,
   formatBytes,
   resetFFmpeg,
 } from "./utils/videoProcessor";
+import {
+  FILE_LIMITS,
+  mapProcessingError,
+  sanitizeFileSegment,
+  validateIncomingFiles,
+} from "./utils/validation";
 import {
   Zap,
   Archive,
@@ -76,10 +84,23 @@ const formatTime = (seconds: number): string => {
   return `${mins}分${secs}秒`;
 };
 
+const createId = () =>
+  globalThis.crypto?.randomUUID?.() ??
+  `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
 const App: React.FC = () => {
   // 設定管理（LocalStorage自動保存付き）
-  const { config, setConfig, exportSettings, importSettings, resetSettings } =
-    useSettings();
+  const {
+    config,
+    setConfig,
+    savedPresets,
+    savePreset,
+    deletePreset,
+    applyPreset,
+    exportSettings,
+    importSettings,
+    resetSettings,
+  } = useSettings();
 
   const [videos, setVideos] = useState<VideoFile[]>([]);
   const [isProcessingAll, setIsProcessingAll] = useState(false);
@@ -88,10 +109,16 @@ const App: React.FC = () => {
     "unloaded" | "loading" | "ready"
   >("unloaded");
   const [showSettings, setShowSettings] = useState(false);
+  const [statusNotice, setStatusNotice] = useState<{
+    tone: "info" | "error";
+    message: string;
+  } | null>(null);
+  const [pendingRemovalId, setPendingRemovalId] = useState<string | null>(null);
   const [currentWave, setCurrentWave] = useState(0);
   const [totalWaves, setTotalWaves] = useState(0);
   const [isCancelling, setIsCancelling] = useState(false);
   const cancelRef = useRef(false);
+  const pendingRemovalTimerRef = useRef<number | null>(null);
 
   // 処理統計（時間計測用）
   const [processingStats, setProcessingStats] = useState<ProcessingStats>({
@@ -112,37 +139,112 @@ const App: React.FC = () => {
         setEngineStatus("ready");
       } catch (e) {
         console.error("FFmpeg load failed", e);
-        alert(
-          "FFmpegエンジンの読み込みに失敗しました。ブラウザの設定やネットワークを確認してください。",
-        );
+        setEngineStatus("unloaded");
+        setStatusNotice({
+          tone: "error",
+          message:
+            "FFmpegエンジンの読み込みに失敗しました。ブラウザ設定、COOP/COEP、ネットワークを確認してください。",
+        });
       }
     };
     init();
   }, []);
 
-  const handleFilesSelected = useCallback((files: File[]) => {
-    const newVideos: VideoFile[] = files.map((file) => ({
-      id: Math.random().toString(36).substr(2, 9),
-      file,
-      name: file.name,
-      originalSize: file.size,
-      status: "pending",
-      progress: 0,
-      thumbnails: [],
-      selectedThumbnailIndex: undefined,
-    }));
-    setVideos((prev) => [...prev, ...newVideos]);
+  const handleFilesSelected = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+
+      const result = await validateIncomingFiles(files, videos);
+
+      if (result.accepted.length > 0) {
+        setVideos((prev) => [
+          ...prev,
+          ...result.accepted.map(({ file, duration }) => ({
+            id: createId(),
+            file,
+            name: file.name,
+            originalSize: file.size,
+            duration,
+            status: "pending" as const,
+            progress: 0,
+            thumbnails: [],
+            selectedThumbnailIndex: undefined,
+          })),
+        ]);
+      }
+
+      if (result.rejected.length > 0 || result.duplicateCount > 0) {
+        const reasons = [...result.rejected];
+        if (result.duplicateCount > 0) {
+          reasons.push(
+            `重複ファイル ${result.duplicateCount} 件はキューに追加しませんでした。`,
+          );
+        }
+        setStatusNotice({
+          tone: result.accepted.length > 0 ? "info" : "error",
+          message: reasons.join(" "),
+        });
+      } else if (result.accepted.length > 0) {
+        setStatusNotice({
+          tone: "info",
+          message: `${result.accepted.length} 件をキューに追加しました。上限は ${FILE_LIMITS.maxQueueFiles} 本、総量 ${Math.round(FILE_LIMITS.maxTotalSizeBytes / (1024 * 1024))}MB です。`,
+        });
+      }
+    },
+    [videos],
+  );
+
+  const clearPendingRemoval = useCallback(() => {
+    if (pendingRemovalTimerRef.current !== null) {
+      window.clearTimeout(pendingRemovalTimerRef.current);
+      pendingRemovalTimerRef.current = null;
+    }
+    setPendingRemovalId(null);
   }, []);
 
-  const handleRemoveVideo = useCallback((id: string) => {
-    setVideos((prev) => {
-      const target = prev.find((v) => v.id === id);
-      if (target) {
-        target.thumbnails.forEach((t) => URL.revokeObjectURL(t.url));
+  useEffect(() => {
+    return () => {
+      if (pendingRemovalTimerRef.current !== null) {
+        window.clearTimeout(pendingRemovalTimerRef.current);
       }
-      return prev.filter((v) => v.id !== id);
-    });
+    };
   }, []);
+
+  const handleRemoveVideo = useCallback(
+    (id: string) => {
+      if (pendingRemovalId !== id) {
+        clearPendingRemoval();
+        setPendingRemovalId(id);
+        pendingRemovalTimerRef.current = window.setTimeout(() => {
+          setPendingRemovalId(null);
+          pendingRemovalTimerRef.current = null;
+        }, 4000);
+
+        const target = videos.find((video) => video.id === id);
+        if (target) {
+          setStatusNotice({
+            tone: "info",
+            message: `${target.name} を削除待ちにしました。4秒以内にもう一度削除を押すと確定します。`,
+          });
+        }
+        return;
+      }
+
+      clearPendingRemoval();
+      setVideos((prev) => {
+        const target = prev.find((v) => v.id === id);
+        if (target) {
+          target.thumbnails.forEach((t) => URL.revokeObjectURL(t.url));
+          setStatusNotice({
+            tone: "info",
+            message: `${target.name} をキューから削除しました。`,
+          });
+        }
+        return prev.filter((v) => v.id !== id);
+      });
+    },
+    [clearPendingRemoval, pendingRemovalId, videos],
+  );
 
   const handleSelectThumbnail = useCallback((id: string, index: number) => {
     setVideos((prev) =>
@@ -237,15 +339,15 @@ const App: React.FC = () => {
           ),
         );
       } catch (err: any) {
-        const message =
+        const rawMessage =
           err instanceof Error
             ? err.message
             : typeof err === "string"
               ? err
-              : "不明なエラーが発生しました。";
+              : "unknown";
         if (
-          /memory access out of bounds/i.test(message) ||
-          /タイムアウト/.test(message)
+          /memory access out of bounds/i.test(rawMessage) ||
+          /タイムアウト/.test(rawMessage)
         ) {
           try {
             await resetFFmpeg(true);
@@ -256,7 +358,11 @@ const App: React.FC = () => {
         setVideos((prev) =>
           prev.map((item) =>
             item.id === v.id
-              ? { ...item, status: "error", error: message }
+              ? {
+                  ...item,
+                  status: "error",
+                  error: mapProcessingError(err),
+                }
               : item,
           ),
         );
@@ -360,6 +466,7 @@ const App: React.FC = () => {
     cancelRef.current = false;
     setIsCancelling(false);
     setIsProcessingAll(true);
+    setStatusNotice(null);
 
     // 処理統計をリセット
     processedTimesRef.current = [];
@@ -403,6 +510,7 @@ const App: React.FC = () => {
     cancelRef.current = false;
     setIsCancelling(false);
     setIsProcessingAll(true);
+    setStatusNotice(null);
 
     const failed = videos.filter((v) => v.status === "error");
 
@@ -440,14 +548,16 @@ const App: React.FC = () => {
 
   // ファイル名テンプレートを適用
   const applyFilenameTemplate = (originalName: string): string => {
-    const baseName = originalName.replace(/\.[^/.]+$/, "");
+    const baseName = sanitizeFileSegment(originalName.replace(/\.[^/.]+$/, ""));
     const date = new Date().toISOString().slice(0, 10);
 
-    return config.filenameTemplate
+    return sanitizeFileSegment(
+      config.filenameTemplate
       .replace("{original}", baseName)
       .replace("{date}", date)
       .replace("{platform}", "campaign")
-      .replace("{size}", `${config.targetSizeMB}MB`);
+      .replace("{size}", `${config.targetSizeMB}MB`),
+    );
   };
 
   const handleBatchDownload = async () => {
@@ -459,7 +569,7 @@ const App: React.FC = () => {
       const zip = new JSZip();
 
       completed.forEach((v) => {
-        const baseName = v.name.replace(/\.[^/.]+$/, "");
+        const baseName = sanitizeFileSegment(v.name.replace(/\.[^/.]+$/, ""));
         const outputName = applyFilenameTemplate(v.name);
         const folder = zip.folder(baseName);
 
@@ -485,7 +595,11 @@ const App: React.FC = () => {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (err) {
-      alert("ZIP作成中にエラーが発生しました。");
+      setStatusNotice({
+        tone: "error",
+        message:
+          "ZIP作成中にエラーが発生しました。容量の大きいファイルを減らして再試行してください。",
+      });
     } finally {
       setIsZipping(false);
     }
@@ -504,7 +618,7 @@ const App: React.FC = () => {
       const zip = new JSZip();
 
       completed.forEach((v) => {
-        const baseName = v.name.replace(/\.[^/.]+$/, "");
+        const baseName = sanitizeFileSegment(v.name.replace(/\.[^/.]+$/, ""));
         const selectedIndex = v.selectedThumbnailIndex ?? 0;
         const selectedThumb = v.thumbnails[selectedIndex] || v.thumbnails[0];
         if (selectedThumb) {
@@ -522,7 +636,11 @@ const App: React.FC = () => {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (err) {
-      alert("サムネイルZIP作成中にエラーが発生しました。");
+      setStatusNotice({
+        tone: "error",
+        message:
+          "サムネイルZIP作成中にエラーが発生しました。対象サムネイル数を減らして再試行してください。",
+      });
     } finally {
       setIsZippingThumbnails(false);
     }
@@ -547,6 +665,14 @@ const App: React.FC = () => {
 
   const progressPercent =
     stats.count > 0 ? (stats.completed / stats.count) * 100 : 0;
+  const startDisabledReason =
+    engineStatus !== "ready"
+      ? "FFmpegエンジンの読込完了を待ってください。"
+      : videos.length === 0
+        ? "まず最適化したい動画を追加してください。"
+        : stats.pending === 0
+          ? "処理待ちの動画がありません。追加するか、失敗分を再処理してください。"
+          : null;
 
   return (
     <div className="min-h-screen gradient-mesh">
@@ -594,12 +720,14 @@ const App: React.FC = () => {
 
             {/* Settings Toggle */}
             <button
+              type="button"
               onClick={() => setShowSettings(!showSettings)}
               className={`p-2.5 rounded-lg transition-all ${
                 showSettings
                   ? "bg-indigo-500/20 text-indigo-400"
                   : "bg-white/5 text-slate-400 hover:bg-white/10"
               }`}
+              aria-label={showSettings ? "設定パネルを閉じる" : "設定パネルを開く"}
             >
               <Settings2 size={18} />
             </button>
@@ -668,6 +796,10 @@ const App: React.FC = () => {
                         onRemove={handleRemoveVideo}
                         onRetry={handleRetryVideo}
                         onSelectThumbnail={handleSelectThumbnail}
+                        isPendingRemoval={pendingRemovalId === v.id}
+                        getDownloadName={(originalName) =>
+                          `${applyFilenameTemplate(originalName)}.mp4`
+                        }
                       />
                     </div>
                   ))}
@@ -684,6 +816,10 @@ const App: React.FC = () => {
                 <OptimizationSettings
                   config={config}
                   onChange={setConfig}
+                  savedPresets={savedPresets}
+                  onSavePreset={savePreset}
+                  onDeletePreset={deletePreset}
+                  onApplyPreset={applyPreset}
                   onExport={exportSettings}
                   onImport={importSettings}
                   onReset={resetSettings}
@@ -697,6 +833,36 @@ const App: React.FC = () => {
                 <Archive size={18} className="text-indigo-400" />
                 <h3 className="font-semibold">エクスポート</h3>
               </div>
+
+              {stats.count === 0 && (
+                <div className="rounded-xl border border-white/8 bg-white/4 p-4 space-y-2">
+                  <p className="text-xs font-medium text-slate-300">
+                    最短フロー
+                  </p>
+                  <ol className="space-y-1 text-xs text-slate-500">
+                    <li>1. 動画を追加</li>
+                    <li>2. 必要ならプリセットとサイズ制限を調整</li>
+                    <li>3. 一括処理して ZIP で回収</li>
+                  </ol>
+                  <p className="text-[10px] text-slate-600">
+                    処理が始まると、進捗、削減量、工数削減試算をここに表示します。
+                  </p>
+                </div>
+              )}
+
+              {statusNotice && (
+                <div
+                  role={statusNotice.tone === "error" ? "alert" : "status"}
+                  aria-live={statusNotice.tone === "error" ? "assertive" : "polite"}
+                  className={`rounded-xl border p-3 text-xs leading-relaxed ${
+                    statusNotice.tone === "error"
+                      ? "border-red-500/20 bg-red-500/10 text-red-300"
+                      : "border-cyan-500/20 bg-cyan-500/10 text-cyan-300"
+                  }`}
+                >
+                  {statusNotice.message}
+                </div>
+              )}
 
               {/* Progress */}
               {stats.count > 0 && (
@@ -759,6 +925,7 @@ const App: React.FC = () => {
               {/* Process / Cancel Button */}
               {isProcessingAll ? (
                 <button
+                  type="button"
                   onClick={handleCancelProcess}
                   disabled={isCancelling}
                   className="w-full btn-secondary flex items-center justify-center gap-2 bg-red-500/10 border-red-500/30 text-red-400 hover:bg-red-500/20"
@@ -777,6 +944,7 @@ const App: React.FC = () => {
                 </button>
               ) : (
                 <button
+                  type="button"
                   onClick={handleProcessAll}
                   disabled={
                     engineStatus !== "ready" ||
@@ -796,9 +964,14 @@ const App: React.FC = () => {
                 </button>
               )}
 
+              {!isProcessingAll && startDisabledReason && (
+                <p className="text-xs text-slate-500">{startDisabledReason}</p>
+              )}
+
               {/* Retry Failed Button */}
               {stats.failed > 0 && !isProcessingAll && (
                 <button
+                  type="button"
                   onClick={handleRetryFailed}
                   disabled={isProcessingAll || engineStatus !== "ready"}
                   className="w-full btn-secondary flex items-center justify-center gap-2 bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20"
@@ -812,6 +985,7 @@ const App: React.FC = () => {
               {stats.completed > 0 && !isProcessingAll && (
                 <>
                   <button
+                    type="button"
                     onClick={handleBatchDownload}
                     disabled={isZipping}
                     className="w-full btn-secondary flex items-center justify-center gap-2 bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20"
@@ -827,6 +1001,7 @@ const App: React.FC = () => {
                   </button>
 
                   <button
+                    type="button"
                     onClick={handleBatchThumbnailDownload}
                     disabled={isZippingThumbnails}
                     className="w-full btn-secondary flex items-center justify-center gap-2 bg-indigo-500/10 border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20"
@@ -843,6 +1018,8 @@ const App: React.FC = () => {
                 </>
               )}
             </div>
+
+            <ValueEstimator videos={videos} config={config} />
 
             {/* Summary Report */}
             {videos.length > 0 && (
@@ -869,21 +1046,26 @@ const App: React.FC = () => {
       </main>
 
       {/* Mobile FAB */}
-      <div className="fixed bottom-6 right-6 lg:hidden">
-        <label className="btn-primary rounded-full w-14 h-14 flex items-center justify-center cursor-pointer shadow-xl shadow-indigo-500/30">
-          <Upload size={22} />
-          <input
-            type="file"
-            multiple
-            accept="video/*"
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files)
-                handleFilesSelected(Array.from(e.target.files));
-            }}
-          />
-        </label>
-      </div>
+      {videos.length > 0 && (
+        <div className="fixed bottom-6 right-6 lg:hidden">
+          <label
+            className="btn-primary rounded-full w-14 h-14 flex items-center justify-center cursor-pointer shadow-xl shadow-indigo-500/30"
+            aria-label="動画を追加"
+          >
+            <Upload size={22} />
+            <input
+              type="file"
+              multiple
+              accept={ALLOWED_EXTENSIONS.join(",")}
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files)
+                  handleFilesSelected(Array.from(e.target.files));
+              }}
+            />
+          </label>
+        </div>
+      )}
     </div>
   );
 };

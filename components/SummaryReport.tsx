@@ -64,13 +64,19 @@ export const SummaryReport: React.FC<Props> = ({
     const completed = videos.filter((v) => v.status === "completed");
     const failed = videos.filter((v) => v.status === "error");
     const totalOriginal = videos.reduce((acc, v) => acc + v.originalSize, 0);
+    const completedOriginal = completed.reduce(
+      (acc, v) => acc + v.originalSize,
+      0,
+    );
     const totalOptimized = completed.reduce(
       (acc, v) => acc + (v.optimizedSize ?? 0),
       0,
     );
-    const totalSaved = totalOriginal - totalOptimized;
+    const totalSaved = completedOriginal - totalOptimized;
     const avgCompressionRatio =
-      totalOriginal > 0 ? ((totalSaved / totalOriginal) * 100).toFixed(1) : "0";
+      completedOriginal > 0
+        ? ((totalSaved / completedOriginal) * 100).toFixed(1)
+        : "0";
 
     let processingTime = null;
     if (processingStats?.startTime && processingStats?.endTime) {
@@ -250,6 +256,12 @@ export const SummaryReport: React.FC<Props> = ({
             </div>
           )}
         </div>
+
+        {hasCompleted && (
+          <p className="text-[10px] text-slate-500">
+            削減量と圧縮率は、完了した動画のみを基準に算出しています。
+          </p>
+        )}
 
         {/* Export Buttons */}
         {hasCompleted && (

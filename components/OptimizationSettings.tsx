@@ -1,6 +1,6 @@
-import React, { useRef } from "react";
-import { OptimizationConfig, ThumbnailAspectRatio } from "../types";
-import { PLATFORM_PRESETS, DEFAULT_CONFIG } from "../constants";
+import React, { useRef, useState } from "react";
+import { OptimizationConfig, SavedPreset, ThumbnailAspectRatio } from "../types";
+import { PLATFORM_PRESETS } from "../constants";
 import {
   Sliders,
   ShieldCheck,
@@ -23,6 +23,10 @@ import {
 interface Props {
   config: OptimizationConfig;
   onChange: (config: OptimizationConfig) => void;
+  savedPresets?: SavedPreset[];
+  onSavePreset?: (name: string) => void;
+  onDeletePreset?: (id: string) => void;
+  onApplyPreset?: (preset: SavedPreset) => void;
   onExport?: () => void;
   onImport?: (file: File) => Promise<{ success: boolean; message: string }>;
   onReset?: () => void;
@@ -35,6 +39,8 @@ interface InputFieldProps {
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   step?: string;
   unit?: string;
+  min?: number;
+  max?: number;
 }
 
 const InputField: React.FC<InputFieldProps> = ({
@@ -44,18 +50,26 @@ const InputField: React.FC<InputFieldProps> = ({
   onChange,
   step,
   unit,
+  min,
+  max,
 }) => (
   <div className="group">
-    <label className="block text-[10px] text-slate-500 mb-1.5 font-medium uppercase tracking-wider">
+    <label
+      htmlFor={name}
+      className="block text-[10px] text-slate-500 mb-1.5 font-medium uppercase tracking-wider"
+    >
       {label}
     </label>
     <div className="relative">
       <input
+        id={name}
         type="number"
         name={name}
         value={value}
         onChange={onChange}
         step={step}
+        min={min}
+        max={max}
         className="w-full px-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-slate-200
                    focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 outline-none
                    transition-all duration-200 hover:border-white/20
@@ -116,11 +130,17 @@ const PlatformIcon: React.FC<{ icon: string; size?: number }> = ({
 export const OptimizationSettings: React.FC<Props> = ({
   config,
   onChange,
+  savedPresets = [],
+  onSavePreset,
+  onDeletePreset,
+  onApplyPreset,
   onExport,
   onImport,
   onReset,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [presetName, setPresetName] = useState("");
+  const [importNotice, setImportNotice] = useState<string | null>(null);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -150,14 +170,19 @@ export const OptimizationSettings: React.FC<Props> = ({
     const file = e.target.files?.[0];
     if (file && onImport) {
       const result = await onImport(file);
-      if (!result.success) {
-        alert(result.message);
-      }
+      setImportNotice(result.message);
     }
     // リセット（同じファイルを再選択可能に）
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
+  };
+
+  const handleSavePreset = () => {
+    const name = presetName.trim();
+    if (!name || !onSavePreset) return;
+    onSavePreset(name);
+    setPresetName("");
   };
 
   return (
@@ -182,7 +207,7 @@ export const OptimizationSettings: React.FC<Props> = ({
               プラットフォーム別プリセット
             </span>
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {PLATFORM_PRESETS.map((preset) => (
               <button
                 key={preset.id}
@@ -215,7 +240,7 @@ export const OptimizationSettings: React.FC<Props> = ({
               サイズ制限
             </span>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <InputField
               label="目標サイズ"
               name="targetSizeMB"
@@ -223,6 +248,8 @@ export const OptimizationSettings: React.FC<Props> = ({
               onChange={handleChange}
               step="0.1"
               unit="MB"
+              min={0.3}
+              max={30}
             />
             <InputField
               label="絶対上限"
@@ -231,6 +258,8 @@ export const OptimizationSettings: React.FC<Props> = ({
               onChange={handleChange}
               step="0.1"
               unit="MB"
+              min={0.5}
+              max={30}
             />
           </div>
         </div>
@@ -243,13 +272,15 @@ export const OptimizationSettings: React.FC<Props> = ({
               解像度・音声
             </span>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <InputField
               label="横幅基準"
               name="targetWidthPx"
               value={config.targetWidthPx}
               onChange={handleChange}
               unit="px"
+              min={240}
+              max={1920}
             />
             <InputField
               label="音声ビットレート"
@@ -257,6 +288,8 @@ export const OptimizationSettings: React.FC<Props> = ({
               value={config.audioBitrateKbps}
               onChange={handleChange}
               unit="kbps"
+              min={32}
+              max={320}
             />
           </div>
         </div>
@@ -270,7 +303,14 @@ export const OptimizationSettings: React.FC<Props> = ({
             </span>
           </div>
           <div>
+            <label
+              htmlFor="filenameTemplate"
+              className="sr-only"
+            >
+              ファイル名テンプレート
+            </label>
             <input
+              id="filenameTemplate"
               type="text"
               name="filenameTemplate"
               value={config.filenameTemplate}
@@ -332,7 +372,7 @@ export const OptimizationSettings: React.FC<Props> = ({
             <label className="block text-[10px] text-slate-500 font-medium uppercase tracking-wider">
               アスペクト比
             </label>
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {(
                 [
                   { value: "16:9", icon: RectangleHorizontal, label: "横長" },
@@ -414,7 +454,7 @@ export const OptimizationSettings: React.FC<Props> = ({
             </button>
           )}
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <InputField
               label="開始オフセット"
               name="thumbnailOffsetSeconds"
@@ -422,6 +462,8 @@ export const OptimizationSettings: React.FC<Props> = ({
               onChange={handleChange}
               step="0.1"
               unit="秒"
+              min={0}
+              max={30}
             />
             <InputField
               label="画像容量"
@@ -429,6 +471,8 @@ export const OptimizationSettings: React.FC<Props> = ({
               value={config.thumbnailTargetSizeKB}
               onChange={handleChange}
               unit="KB"
+              min={20}
+              max={1000}
             />
             <InputField
               label="出力横幅"
@@ -436,9 +480,86 @@ export const OptimizationSettings: React.FC<Props> = ({
               value={config.thumbnailWidthPx}
               onChange={handleChange}
               unit="px"
+              min={240}
+              max={2000}
             />
           </div>
         </div>
+
+        {/* Saved Presets */}
+        {(onSavePreset || savedPresets.length > 0) && (
+          <div className="pt-3 border-t border-white/5 space-y-3">
+            <div className="flex items-center gap-2">
+              <Layers size={14} className="text-cyan-400" />
+              <span className="text-xs font-medium text-slate-300">
+                保存済みプリセット
+              </span>
+            </div>
+
+            {onSavePreset && (
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={presetName}
+                  onChange={(event) => setPresetName(event.target.value)}
+                  placeholder="例: X向け 1MB"
+                  className="flex-1 px-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-slate-200
+                             focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 outline-none"
+                  aria-label="保存するプリセット名"
+                />
+                <button
+                  type="button"
+                  onClick={handleSavePreset}
+                  disabled={presetName.trim().length === 0}
+                  className="btn-secondary text-xs px-3 disabled:opacity-50"
+                >
+                  保存
+                </button>
+              </div>
+            )}
+
+            {savedPresets.length > 0 ? (
+              <div className="space-y-2">
+                {savedPresets
+                  .slice()
+                  .sort((a, b) => b.createdAt - a.createdAt)
+                  .map((preset) => (
+                    <div
+                      key={preset.id}
+                      className="flex items-center gap-2 rounded-lg border border-white/8 bg-white/4 p-2.5"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => onApplyPreset?.(preset)}
+                        className="flex-1 text-left min-w-0"
+                      >
+                        <p className="text-xs font-medium text-slate-200 truncate">
+                          {preset.name}
+                        </p>
+                        <p className="text-[10px] text-slate-500">
+                          {preset.config.targetSizeMB}MB /{" "}
+                          {preset.config.targetWidthPx}px /{" "}
+                          {preset.config.thumbnailAspectRatio}
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDeletePreset?.(preset.id)}
+                        className="btn-secondary text-xs px-2.5 py-2"
+                        aria-label={`${preset.name} を削除`}
+                      >
+                        <RotateCcw size={12} />
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            ) : (
+              <p className="text-[10px] text-slate-500">
+                よく使う設定を保存すると、媒体ごとの再設定コストを削減できます。
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Export / Import / Reset */}
         <div className="pt-3 border-t border-white/5 space-y-3">
@@ -478,11 +599,17 @@ export const OptimizationSettings: React.FC<Props> = ({
                 onClick={onReset}
                 className="btn-secondary flex items-center justify-center gap-2 text-xs px-3"
                 title="デフォルトに戻す"
+                aria-label="設定をデフォルトに戻す"
               >
                 <RotateCcw size={14} />
               </button>
             )}
           </div>
+          {importNotice && (
+            <p className="text-[10px] text-cyan-400 leading-relaxed">
+              {importNotice}
+            </p>
+          )}
           <p className="text-[10px] text-slate-500 leading-relaxed">
             設定はブラウザに自動保存されます。エクスポートでチーム共有も可能です。
           </p>

@@ -13,6 +13,8 @@ export const VideoPreviewModal: React.FC<Props> = ({
   onClose,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -28,10 +30,62 @@ export const VideoPreviewModal: React.FC<Props> = ({
   }, [videoBlob]);
 
   useEffect(() => {
+    const previousActiveElement =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const focusTimer = window.setTimeout(() => {
+      closeButtonRef.current?.focus();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.body.style.overflow = previousOverflow;
+      previousActiveElement?.focus();
+    };
+  }, []);
+
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         onClose();
-      } else if (e.key === " ") {
+        return;
+      }
+
+      if (e.key === "Tab" && dialogRef.current) {
+        const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        );
+
+        if (focusable.length === 0) {
+          return;
+        }
+
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+          return;
+        }
+        if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+        return;
+      }
+
+      const target = e.target as HTMLElement | null;
+      const isFormControl =
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.tagName === "SELECT" ||
+        target?.getAttribute("role") === "slider";
+
+      if (e.key === " " && !isFormControl) {
         e.preventDefault();
         togglePlay();
       }
@@ -90,15 +144,22 @@ export const VideoPreviewModal: React.FC<Props> = ({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-xl"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="preview-title"
     >
       <div
-        className="relative bg-[#0d0d12] rounded-2xl overflow-hidden shadow-2xl shadow-black/50 max-w-4xl w-full mx-4 border border-white/10"
+        ref={dialogRef}
+        className="relative bg-[#0d0d12] rounded-2xl overflow-hidden shadow-2xl shadow-black/50 max-w-4xl w-full mx-4 border border-white/10 overscroll-contain"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-white/[0.02]">
           <div>
-            <h3 className="font-semibold text-white truncate max-w-md">
+            <h3
+              id="preview-title"
+              className="font-semibold text-white truncate max-w-md"
+            >
               {videoName}
             </h3>
             <p className="text-xs text-slate-500 mt-1">
@@ -109,8 +170,11 @@ export const VideoPreviewModal: React.FC<Props> = ({
             </p>
           </div>
           <button
+            ref={closeButtonRef}
+            type="button"
             onClick={onClose}
             className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+            aria-label="プレビューを閉じる"
           >
             <X size={20} className="text-slate-400" />
           </button>
@@ -127,19 +191,22 @@ export const VideoPreviewModal: React.FC<Props> = ({
               onLoadedMetadata={handleLoadedMetadata}
               onEnded={() => setIsPlaying(false)}
               onClick={togglePlay}
+              aria-label={`${videoName} のプレビュー動画`}
             />
           )}
 
           {/* Play Overlay */}
           {!isPlaying && (
-            <div
+            <button
+              type="button"
               className="absolute inset-0 flex items-center justify-center cursor-pointer"
               onClick={togglePlay}
+              aria-label="動画を再生"
             >
               <div className="w-20 h-20 bg-indigo-500/30 backdrop-blur-md rounded-full flex items-center justify-center hover:bg-indigo-500/40 transition-all hover:scale-105 border border-white/20">
                 <Play size={36} className="text-white ml-1" fill="white" />
               </div>
-            </div>
+            </button>
           )}
         </div>
 
@@ -152,6 +219,7 @@ export const VideoPreviewModal: React.FC<Props> = ({
             max={duration || 0}
             value={currentTime}
             onChange={handleSeek}
+            aria-label="再生位置"
             className="w-full h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer
                        [&::-webkit-slider-thumb]:appearance-none
                        [&::-webkit-slider-thumb]:w-4
@@ -167,8 +235,10 @@ export const VideoPreviewModal: React.FC<Props> = ({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <button
+                type="button"
                 onClick={togglePlay}
                 className="p-2.5 bg-indigo-500 hover:bg-indigo-600 rounded-lg transition-colors shadow-lg shadow-indigo-500/20"
+                aria-label={isPlaying ? "動画を一時停止" : "動画を再生"}
               >
                 {isPlaying ? (
                   <Pause size={18} className="text-white" />
@@ -178,8 +248,10 @@ export const VideoPreviewModal: React.FC<Props> = ({
               </button>
 
               <button
+                type="button"
                 onClick={toggleMute}
                 className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                aria-label={isMuted ? "ミュートを解除" : "ミュートにする"}
               >
                 {isMuted ? (
                   <VolumeX size={18} className="text-slate-400" />
@@ -194,8 +266,10 @@ export const VideoPreviewModal: React.FC<Props> = ({
             </div>
 
             <button
+              type="button"
               onClick={handleFullscreen}
               className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+              aria-label="全画面表示"
             >
               <Maximize2 size={18} className="text-slate-400" />
             </button>

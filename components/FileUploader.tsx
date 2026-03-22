@@ -23,9 +23,7 @@ export const FileUploader: React.FC<Props> = ({ onFilesSelected }) => {
     (e: React.DragEvent) => {
       e.preventDefault();
       setIsDragging(false);
-      const files = (Array.from(e.dataTransfer.files) as File[]).filter((f) =>
-        ALLOWED_EXTENSIONS.some((ext) => f.name.toLowerCase().endsWith(ext)),
-      );
+      const files = Array.from(e.dataTransfer.files) as File[];
       if (files.length > 0) onFilesSelected(files);
     },
     [onFilesSelected],
@@ -34,7 +32,7 @@ export const FileUploader: React.FC<Props> = ({ onFilesSelected }) => {
   const handleFileInput = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       if (e.target.files) {
-        const files = Array.from(e.target.files);
+        const files = Array.from<File>(e.target.files);
         onFilesSelected(files);
       }
     },

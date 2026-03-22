@@ -33,3 +33,8 @@ dist-ssr
 .playwright-mcp/
 .specstory/
 .cursorindexingignore
+.codex-artifacts/
+output/
+task_plan.md
+findings.md
+progress.md

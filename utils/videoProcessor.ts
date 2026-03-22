@@ -10,6 +10,7 @@ import {
   loadFaceDetectionModel,
   cropImageWithFaceDetection,
   calculateCropArea,
+  blobToImage,
 } from "./faceDetector";
 
 let ffmpeg: FFmpeg | null = null;
@@ -172,6 +173,67 @@ function withTimeout<T>(
         reject(err);
       });
   });
+}
+
+async function canvasToJpegBlob(
+  canvas: HTMLCanvasElement,
+  quality: number,
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          resolve(blob);
+          return;
+        }
+        reject(new Error("サムネイルBlobの生成に失敗しました。"));
+      },
+      "image/jpeg",
+      quality,
+    );
+  });
+}
+
+async function compressImageToTargetSize(
+  imageBlob: Blob,
+  maxSizeBytes: number,
+): Promise<Blob> {
+  if (imageBlob.size <= maxSizeBytes || maxSizeBytes <= 0) {
+    return imageBlob;
+  }
+
+  const image = await blobToImage(imageBlob);
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const ctx = canvas.getContext("2d");
+
+  if (!ctx) {
+    return imageBlob;
+  }
+
+  ctx.drawImage(image, 0, 0);
+
+  let bestBlob = imageBlob;
+  let low = 0.35;
+  let high = 0.88;
+
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const quality = (low + high) / 2;
+    const compressed = await canvasToJpegBlob(canvas, quality);
+
+    if (compressed.size <= maxSizeBytes) {
+      bestBlob = compressed;
+      low = quality;
+    } else {
+      if (compressed.size < bestBlob.size) {
+        bestBlob = compressed;
+      }
+      high = quality;
+    }
+  }
+
+  return bestBlob;
 }
 
 /**
@@ -485,6 +547,20 @@ export async function processVideoWithFFmpeg(
           } catch (e) {
             console.warn(
               `Face detection crop failed for thumbnail ${i + 1}:`,
+              e,
+            );
+          }
+        }
+
+        if (config.thumbnailTargetSizeKB > 0) {
+          try {
+            thumbBlob = await compressImageToTargetSize(
+              thumbBlob,
+              config.thumbnailTargetSizeKB * 1024,
+            );
+          } catch (e) {
+            console.warn(
+              `Thumbnail size optimization failed for thumbnail ${i + 1}:`,
               e,
             );
           }

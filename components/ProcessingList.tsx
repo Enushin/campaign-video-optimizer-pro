@@ -23,6 +23,8 @@ interface Props {
   onRemove?: (id: string) => void;
   onRetry?: (video: VideoFile) => void;
   onSelectThumbnail?: (id: string, index: number) => void;
+  getDownloadName?: (originalName: string) => string;
+  isPendingRemoval?: boolean;
 }
 
 export const VideoCard: React.FC<Props> = ({
@@ -31,6 +33,8 @@ export const VideoCard: React.FC<Props> = ({
   onRemove,
   onRetry,
   onSelectThumbnail,
+  getDownloadName,
+  isPendingRemoval = false,
 }) => {
   const [showPreview, setShowPreview] = useState(false);
   const reduction =
@@ -128,9 +132,11 @@ export const VideoCard: React.FC<Props> = ({
           {/* Retry Button for Error State */}
           {v.status === "error" && onRetry && (
             <button
+              type="button"
               onClick={() => onRetry(v)}
               className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors"
               title="リトライ"
+              aria-label={`${v.name} を再処理`}
             >
               <RotateCcw size={14} />
             </button>
@@ -139,9 +145,19 @@ export const VideoCard: React.FC<Props> = ({
           {/* Remove Button (not during processing) */}
           {v.status !== "processing" && onRemove && (
             <button
+              type="button"
               onClick={() => onRemove(v.id)}
-              className="p-1.5 rounded-lg bg-white/5 text-slate-500 hover:bg-red-500/20 hover:text-red-400 transition-colors"
-              title="削除"
+              className={`p-1.5 rounded-lg transition-colors ${
+                isPendingRemoval
+                  ? "bg-red-500/20 text-red-300"
+                  : "bg-white/5 text-slate-500 hover:bg-red-500/20 hover:text-red-400"
+              }`}
+              title={isPendingRemoval ? "もう一度押すと削除" : "削除"}
+              aria-label={
+                isPendingRemoval
+                  ? `${v.name} を確定削除`
+                  : `${v.name} をキューから削除`
+              }
             >
               <X size={14} />
             </button>
@@ -196,13 +212,28 @@ export const VideoCard: React.FC<Props> = ({
                   if (!thumb) return;
                   onSelectThumbnail?.(v.id, idx);
                 }}
+                onKeyDown={(event) => {
+                  if (!thumb) return;
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelectThumbnail?.(v.id, idx);
+                  }
+                }}
+                role="button"
+                tabIndex={thumb ? 0 : -1}
+                aria-pressed={isSelected}
+                aria-label={
+                  thumb
+                    ? `${v.name} のサムネイル ${idx + 1} を選択`
+                    : `${v.name} のサムネイル ${idx + 1} は生成中`
+                }
               >
                 {thumb ? (
                   <>
                     <img
                       src={thumb.url}
                       className="w-full h-full object-cover transition-transform duration-300 group-hover/thumb:scale-105"
-                      alt={`Thumbnail ${idx + 1}`}
+                      alt={`${v.name} のサムネイル ${idx + 1}`}
                     />
                     {isSelected && (
                       <div className="absolute top-1 left-1 px-1.5 py-0.5 bg-indigo-500/80 text-white text-[9px] rounded font-bold flex items-center gap-1">
@@ -215,6 +246,7 @@ export const VideoCard: React.FC<Props> = ({
                     </div>
                     {v.status === "completed" && (
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation();
                           downloadFile(
@@ -224,6 +256,7 @@ export const VideoCard: React.FC<Props> = ({
                         }}
                         className="absolute top-1 right-1 p-1.5 rounded-full bg-indigo-500/90 text-white opacity-0 group-hover/thumb:opacity-100 transition-opacity shadow-lg shadow-black/30"
                         title="このサムネイルをダウンロード"
+                        aria-label={`${v.name} のサムネイル ${idx + 1} をダウンロード`}
                       >
                         <Download size={12} className="text-white" />
                       </button>
@@ -244,6 +277,7 @@ export const VideoCard: React.FC<Props> = ({
       {v.status === "completed" && v.optimizedBlob && (
         <div className="flex gap-2">
           <button
+            type="button"
             onClick={() => setShowPreview(true)}
             className="flex-1 btn-secondary flex items-center justify-center gap-2 text-xs py-2.5"
           >
@@ -251,8 +285,14 @@ export const VideoCard: React.FC<Props> = ({
             プレビュー
           </button>
           <button
+            type="button"
             onClick={() =>
-              downloadFile(v.optimizedBlob, `${v.name.split(".")[0]}_opt.mp4`)
+              downloadFile(
+                v.optimizedBlob,
+                getDownloadName
+                  ? getDownloadName(v.name)
+                  : `${v.name.split(".")[0]}_opt.mp4`,
+              )
             }
             className="flex-1 btn-primary flex items-center justify-center gap-2 text-xs py-2.5"
           >

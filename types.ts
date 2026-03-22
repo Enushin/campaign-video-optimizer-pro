@@ -35,6 +35,13 @@ export interface PlatformPreset {
   config: PartialConfig;
 }
 
+export interface SavedPreset {
+  id: string;
+  name: string;
+  config: OptimizationConfig;
+  createdAt: number;
+}
+
 // 処理統計
 export interface ProcessingStats {
   startTime: number | null;

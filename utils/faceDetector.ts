@@ -53,7 +53,8 @@ export async function loadFaceDetectionModel(): Promise<void> {
     }
 
     // CDNからモデルを読み込み
-    const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model";
+    const MODEL_URL =
+      "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model";
 
     await withTimeout(
       faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),

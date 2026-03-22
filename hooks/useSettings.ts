@@ -1,37 +1,29 @@
 import { useState, useEffect, useCallback } from "react";
-import { OptimizationConfig } from "../types";
+import { OptimizationConfig, SavedPreset } from "../types";
 import { DEFAULT_CONFIG } from "../constants";
+import { normalizeConfig, normalizeSavedPresets } from "../utils/validation";
 
 const STORAGE_KEY = "video-optimizer-settings";
 const PRESETS_KEY = "video-optimizer-presets";
 
-export interface SavedPreset {
-  id: string;
-  name: string;
-  config: OptimizationConfig;
-  createdAt: number;
-}
-
 export const useSettings = () => {
-  const [config, setConfig] = useState<OptimizationConfig>(() => {
+  const [configState, setConfigState] = useState<OptimizationConfig>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
-        const parsed = JSON.parse(saved);
-        // DEFAULT_CONFIGとマージして新しいプロパティに対応
-        return { ...DEFAULT_CONFIG, ...parsed };
+        return normalizeConfig(JSON.parse(saved));
       }
     } catch (e) {
       console.warn("Failed to load settings from localStorage:", e);
     }
-    return DEFAULT_CONFIG;
+    return normalizeConfig(DEFAULT_CONFIG);
   });
 
   const [savedPresets, setSavedPresets] = useState<SavedPreset[]>(() => {
     try {
       const saved = localStorage.getItem(PRESETS_KEY);
       if (saved) {
-        return JSON.parse(saved);
+        return normalizeSavedPresets(JSON.parse(saved));
       }
     } catch (e) {
       console.warn("Failed to load presets from localStorage:", e);
@@ -39,14 +31,29 @@ export const useSettings = () => {
     return [];
   });
 
+  const setConfig = useCallback(
+    (
+      next:
+        | OptimizationConfig
+        | ((previousConfig: OptimizationConfig) => OptimizationConfig),
+    ) => {
+      setConfigState((previousConfig) =>
+        normalizeConfig(
+          typeof next === "function" ? next(previousConfig) : next,
+        ),
+      );
+    },
+    [],
+  );
+
   // 設定が変更されたらLocalStorageに保存
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(configState));
     } catch (e) {
       console.warn("Failed to save settings to localStorage:", e);
     }
-  }, [config]);
+  }, [configState]);
 
   // プリセットが変更されたらLocalStorageに保存
   useEffect(() => {
@@ -61,15 +68,17 @@ export const useSettings = () => {
   const savePreset = useCallback(
     (name: string) => {
       const newPreset: SavedPreset = {
-        id: Math.random().toString(36).substr(2, 9),
+        id:
+          globalThis.crypto?.randomUUID?.() ??
+          `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         name,
-        config: { ...config },
+        config: normalizeConfig(configState),
         createdAt: Date.now(),
       };
       setSavedPresets((prev) => [...prev, newPreset]);
       return newPreset;
     },
-    [config],
+    [configState],
   );
 
   // プリセットを削除
@@ -79,13 +88,13 @@ export const useSettings = () => {
 
   // プリセットを適用
   const applyPreset = useCallback((preset: SavedPreset) => {
-    setConfig({ ...DEFAULT_CONFIG, ...preset.config });
+    setConfig(normalizeConfig(preset.config));
   }, []);
 
   // 設定をJSONとしてエクスポート
   const exportSettings = useCallback(() => {
     const data = {
-      config,
+      config: configState,
       presets: savedPresets,
       exportedAt: new Date().toISOString(),
       version: "1.0",
@@ -101,7 +110,7 @@ export const useSettings = () => {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }, [config, savedPresets]);
+  }, [configState, savedPresets]);
 
   // 設定をJSONからインポート
   const importSettings = useCallback(
@@ -111,11 +120,24 @@ export const useSettings = () => {
         reader.onload = (e) => {
           try {
             const data = JSON.parse(e.target?.result as string);
-            if (data.config) {
-              setConfig({ ...DEFAULT_CONFIG, ...data.config });
+            if (!data || typeof data !== "object" || !("config" in data)) {
+              resolve({
+                success: false,
+                message: "設定ファイルの形式が正しくありません",
+              });
+              return;
             }
-            if (data.presets && Array.isArray(data.presets)) {
-              setSavedPresets(data.presets);
+
+            const parsed = data as {
+              config: unknown;
+              presets?: unknown;
+            };
+            const normalizedConfig = normalizeConfig(parsed.config);
+            const normalizedPresets = normalizeSavedPresets(parsed.presets);
+
+            setConfig(normalizedConfig);
+            if (parsed.presets !== undefined) {
+              setSavedPresets(normalizedPresets);
             }
             resolve({ success: true, message: "設定をインポートしました" });
           } catch (err) {
@@ -136,11 +158,11 @@ export const useSettings = () => {
 
   // 設定をリセット
   const resetSettings = useCallback(() => {
-    setConfig(DEFAULT_CONFIG);
+    setConfig(normalizeConfig(DEFAULT_CONFIG));
   }, []);
 
   return {
-    config,
+    config: configState,
     setConfig,
     savedPresets,
     savePreset,
